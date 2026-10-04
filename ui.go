@@ -270,7 +270,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if err := m.st.save(); err != nil {
 			m.setFlash(err.Error(), true)
 		} else {
-			m.setFlash(fmt.Sprintf("Started agent %s for %s in %s", msg.job.AgentID, msg.job.ref(), msg.job.WorktreePath), false)
+			m.setFlash(fmt.Sprintf("Started agent %s for %s in %s", msg.job.AgentID, msg.job.ref(), tildify(msg.job.WorktreePath)), false)
 		}
 		return m, m.poll()
 
@@ -733,7 +733,7 @@ func (m model) viewHeader() string {
 		parts = append(parts, sDim.Render(m.cfg.Query))
 	}
 	if d := m.cfg.ClaudeConfigDir; d != "" {
-		parts = append(parts, sDim.Render("CLAUDE_CONFIG_DIR="+d))
+		parts = append(parts, sDim.Render("CLAUDE_CONFIG_DIR="+tildify(expandHome(d))))
 	}
 	leftPart := strings.Join(parts, "  ")
 	rightPart := sBlue.Render(fmt.Sprintf("● %d running", running)) + "  " +
@@ -784,13 +784,44 @@ func (m model) viewFooter() string {
 			keys = [][2]string{{"↑↓/pgup/pgdn", "scroll"}, {"y", "approve plan"}, {"m", "request changes"}, {"esc", "back"}}
 			break
 		}
-		keys = [][2]string{{"↑↓", "move"}, {"s", "start"}, {"enter/a", "open agent"}, {"A", "attach here"}, {"t", "shell"}, {"o", "editor"}, {"c", "checkout"}, {"y", "approve"}, {"m", "message"}, {"x", "stop"}, {"p", "push+PR"}, {"D", "delete"}, {"r", "refresh"}, {"?", "help"}, {"q", "quit"}}
+		return m.mainKeys()
 	}
 	parts := make([]string, len(keys))
 	for i, k := range keys {
 		parts[i] = sBlue.Render(k[0]) + " " + k[1]
 	}
 	return ansi.Truncate(strings.Join(parts, "  "), m.width, "…")
+}
+
+// mainKeys fits the main screen's key hints to the width: it adds them in
+// order of importance, always keeps "? help" and "q quit", and shows the
+// chosen ones in their usual order.
+func (m model) mainKeys() string {
+	all := [][2]string{
+		{"↑↓", "move"}, {"s", "start"}, {"enter", "open agent"}, {"v", "plan"}, {"y", "approve"},
+		{"m", "message"}, {"t", "shell"}, {"o", "editor"}, {"c", "checkout"}, {"p", "push+PR"},
+		{"x", "stop"}, {"D", "delete"}, {"r", "refresh"},
+	}
+	priority := []int{0, 1, 2, 3, 4, 5, 6, 9, 7, 8, 12, 10, 11}
+	tail := sBlue.Render("?") + " help  " + sBlue.Render("q") + " quit"
+	render := func(k [2]string) string { return sBlue.Render(k[0]) + " " + k[1] }
+	keep := map[int]bool{}
+	used := lipgloss.Width(tail)
+	for _, i := range priority {
+		w := lipgloss.Width(render(all[i])) + 2
+		if used+w > m.width {
+			break
+		}
+		keep[i] = true
+		used += w
+	}
+	var parts []string
+	for i, k := range all {
+		if keep[i] {
+			parts = append(parts, render(k))
+		}
+	}
+	return strings.Join(append(parts, tail), "  ")
 }
 
 func (m model) viewLeft(w, h int) string {
@@ -850,7 +881,6 @@ func (m model) viewLeft(w, h int) string {
 // startForm lists where the fix can be made (a window of the ranked local
 // clones plus "another folder") and the launch options.
 func (m model) startForm() []string {
-	home, _ := os.UserHomeDir()
 	const visible = 5
 	n := len(m.formClones) + 1
 	first := max(0, min(m.formIdx-visible/2, n-visible))
@@ -868,7 +898,7 @@ func (m model) startForm() []string {
 			continue
 		}
 		c := m.formClones[i]
-		lines = append(lines, mark+c.Name+"  "+sDim.Render(strings.Replace(c.Path, home, "~", 1)))
+		lines = append(lines, mark+c.Name+"  "+sDim.Render(tildify(c.Path)))
 	}
 	pause := sDim.Render("[ ]")
 	if m.formPause {
@@ -925,9 +955,9 @@ func (m model) viewRight(w, h int) string {
 	default:
 		agentLine += sDim.Render("  not in claude agents")
 	}
-	wt := job.WorktreePath
+	wt := tildify(job.WorktreePath)
 	if job.CheckedOut {
-		wt = job.RepoPath + sDim.Render("  (main clone)")
+		wt = tildify(job.RepoPath) + sDim.Render("  (main clone)")
 	}
 	info := []string{
 		m.pipeline(job, st.Stage),
@@ -1116,4 +1146,19 @@ func (m *model) loadHelp() {
 	}
 	m.helpWidth = w
 	m.helpVP.SetContent(strings.TrimRight(renderMarkdown(docText("usage.md"), w), "\n"))
+}
+
+// tildify shortens a path under the home directory to ~/….
+func tildify(p string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return p
+	}
+	if p == home {
+		return "~"
+	}
+	if rest, ok := strings.CutPrefix(p, home+string(filepath.Separator)); ok {
+		return "~/" + rest
+	}
+	return p
 }
